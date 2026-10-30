@@ -1,0 +1,11 @@
+# Copia este archivo como docker-compose.override.yml para añadir montajes propios.
+# docker compose lo combina automáticamente con docker-compose.yml.
+services:
+  telegram-download-daemon:
+    volumes:
+      # Discos de la biblioteca (deben coincidir con LIBRARY_DISKS en .env), p.ej.:
+      #   LIBRARY_DISKS=DISCO1=/media/disco1,DISCO2=/media/disco2
+      - /ruta/a/disco1:/media/disco1
+      - /ruta/a/disco2:/media/disco2
+      # Desarrollo: monta el código para aplicar cambios con un simple reinicio
+      # - ./src/telegram_download_daemon_plus:/usr/src/app/telegram_download_daemon_plus

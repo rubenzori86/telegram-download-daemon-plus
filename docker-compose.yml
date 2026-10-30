@@ -1,0 +1,15 @@
+# Configuración en .env (copia .env.example). Discos/carpetas extra de tu
+# máquina en docker-compose.override.yml (copia docker-compose.override.example.yml).
+services:
+  telegram-download-daemon:
+    container_name: telegram-download-daemon-plus
+    build: .
+    env_file: .env
+    volumes:
+      - ${DOWNLOADS_DIR:-./downloads}:/downloads
+      - ./session:/session
+      - ./temp:/temp
+      # FileBot (opcional): pon aquí tu instalación de FileBot
+      - ./filebot-pro:/opt/filebot-pro:ro
+      - ./filebot-data:/filebot-data
+    restart: unless-stopped

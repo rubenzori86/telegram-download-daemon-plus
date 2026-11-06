@@ -25,6 +25,7 @@ from .panel import PanelMixin
 from .questions_manager import QuestionsManagerMixin
 from .session_manager import get_session, save_session, TELEGRAM_DAEMON_SESSION_PATH
 from .status_manager import StatusManagerMixin
+from .update_manager import UpdateManagerMixin
 from .utils import UtilsMixin, sanitize_path_component
 
 LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -47,6 +48,7 @@ class TelegramDownloadDaemon(
     HistoryManagerMixin,
     PanelMixin,
     QuestionsManagerMixin,
+    UpdateManagerMixin,
     CompletionManagerMixin,
     MenuManagerMixin,
     DownloadEngineMixin,
@@ -122,6 +124,7 @@ class TelegramDownloadDaemon(
 
         self.__init_history_manager__()
         self.__init_questions_manager__()
+        self.__init_update_manager__()
         self.load_config()
 
     async def send_hello_message(self, version, client_ref, peer_channel):
@@ -408,6 +411,7 @@ class TelegramDownloadDaemon(
                 watchdog_task = loop.create_task(watchdog())
                 summary_task = loop.create_task(self.daily_summary_loop(client, self.raw_channel_id))
                 panel_task = loop.create_task(self.panel_autorefresh_loop())
+                loop.create_task(self.update_check_loop())
                 loop.create_task(self.ask_for_queued(queue))
                 loop.create_task(self.recover_staging(client, self.raw_channel_id))
 

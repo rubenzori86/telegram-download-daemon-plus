@@ -286,6 +286,7 @@ class PanelMixin:
         errors = list(getattr(self, 'recent_errors', []))
         text = ("🛠️ **Sistema**\n\n"
                 f"🤖 Daemon {DAEMON_VERSION} · ⏱️ en marcha {up}\n"
+                f"{self.update_status_line()}\n"
                 f"📡 Telethon {telethon_version} · 🐍 Python {platform.python_version()}\n"
                 f"🏷️ FileBot Pro {self._filebot_version()}\n"
                 f"🧠 Memoria: {self._memory()}\n"
@@ -294,7 +295,8 @@ class PanelMixin:
                 f"🧯 Avisos/errores recientes: {len(errors)}")
         buttons = [
             [Button.inline("🧯 Últimos errores", data="menu_errors"), Button.inline("👤 Modo de cuenta", data="menu_config_account")],
-            [Button.inline("🔄 Reiniciar bot", data="cmd_restart_bot")],
+            [Button.inline("🔎 Buscar actualizaciones", data="menu_update_check"),
+             Button.inline("🔄 Reiniciar bot", data="cmd_restart_bot")],
             [Button.inline("🔙 Volver", data="menu_main")],
         ]
         return text, buttons
@@ -387,6 +389,14 @@ class PanelMixin:
                                    'menu_files': 'downloads', 'menu_status': 'downloads'}.get(data, 'other')
                 await self._safe_edit(event, text, buttons)
                 self._panel_last_text = text
+                return True
+            if data == 'menu_update_check':
+                await event.answer("Buscando en GitHub…")
+                checked = await self.check_for_update()
+                text, buttons = self.update_view()
+                if not checked:
+                    text = "⚠️ **No he podido conectar con GitHub.** Prueba más tarde."
+                await self._safe_edit(event, text, buttons)
                 return True
             if data == 'menu_lib_stats':
                 await event.answer("Contando… puede tardar unos segundos")

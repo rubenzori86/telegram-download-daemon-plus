@@ -10,6 +10,7 @@ Aquí se anotan los cambios de cada versión.
 - **Botón «Dar enlace»** en las preguntas y en Biblioteca → Pendientes.
 - **Pide el enlace solo** si corriges el nombre y sigue sin encontrarlo.
 - **Varios archivos esperando:** pregunta para cuál es el enlace en vez de adivinar.
+- **Aviso de versiones nuevas:** el bot mira GitHub cada 12 horas y avisa en el canal con las novedades y cómo actualizar. También hay un botón en Sistema. Se desactiva con `UPDATE_CHECK=0`.
 
 ### Corregido
 

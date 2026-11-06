@@ -19,7 +19,7 @@ from .history_manager import KIND_ICON, PENDING_KINDS, fmt_duration, fmt_when, h
 
 logger = logging.getLogger(__name__)
 
-DAEMON_VERSION = "1.1.0"
+DAEMON_VERSION = "1.2.0"
 # Velocidad máxima observada para cuentas sin Premium (Telegram limita por cuenta)
 ACCOUNT_SPEED_NOTE = "≈5 MB/s por cuenta sin Premium"
 

@@ -5,7 +5,7 @@ import sys
 
 from . import TelegramDownloadDaemon
 
-__version__ = "1.0.0-beta.6"
+__version__ = "1.2.0"
 
 TELEGRAM_DAEMON_API_ID = os.getenv("TELEGRAM_DAEMON_API_ID")
 TELEGRAM_DAEMON_API_HASH = os.getenv("TELEGRAM_DAEMON_API_HASH")

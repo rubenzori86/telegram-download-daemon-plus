@@ -14,7 +14,8 @@ import re
 
 from telethon import Button
 
-from .rename_manager import VIDEO_EXTENSIONS, YEAR_RE, looks_like_episode
+from . import media_links
+from .rename_manager import VIDEO_EXTENSIONS, YEAR_RE, looks_like_episode, series_query
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,13 @@ NOISE = re.compile(r'(?i)^(\d{3,4}p|[hx]26[45]|hevc|avc|av1|web(-?dl|rip)?|blura
 SERIES_ANSWER = re.compile(r'(?i)^(?P<name>.+?)\s+(?:s|t|temp(?:orada)?\s*)?(?P<s>\d{1,2})'
                            r'(?:\s*(?:x|e|cap(?:itulo)?)\s*(?P<e>\d{1,3}))?\s*$')
 MOVIE_ANSWER = re.compile(r'^(?P<t>.+?)(?:\s*\(?(?P<y>(?:19|20)\d{2})\)?)?\s*$')
+# Temporada y capítulo que acompañan a un enlace: '1x03', 's01e03', 't1 c3'
+EPISODE_ANSWER = re.compile(r'(?i)(?<![0-9a-z])[st]?\s*(?P<s>\d{1,2})\s*(?:x|e|c|cap(?:itulo)?)\s*(?P<e>\d{1,3})(?![0-9])')
+# Solo la temporada: '2', 't2', 'temporada 2' (el capítulo sale del nombre del archivo)
+SEASON_ANSWER = re.compile(r'(?i)^\s*(?:s|t|temp(?:orada)?\s*)?(?P<s>\d{1,2})\s*$')
+LINK_PROMPT = ("\n\n🔗 **Envía el enlace en un mensaje a este chat**, por ejemplo:\n"
+               "`https://www.themoviedb.org/movie/1559984-my-weird-school`\n"
+               "`https://www.thetvdb.com/series/the-walking-dead`")
 
 
 def title_words(filename):
@@ -47,6 +55,20 @@ def number_in_name(filename):
     return nums[-1] if nums else None
 
 
+def episode_for_link(text, filename):
+    """(temporada, capítulo) para un enlace de serie: lo escrito manda y, si no, el nombre
+    del archivo. None si no se puede saber, para preguntarlo en vez de adivinar."""
+    m = EPISODE_ANSWER.search(text or "")
+    if m:
+        return int(m.group('s')), int(m.group('e'))
+    m = SEASON_ANSWER.match(text or "")
+    if m:
+        ep = number_in_name(filename)
+        return (int(m.group('s')), ep) if ep else None
+    info = series_query(filename)
+    return (info['season'], info['episode']) if info else None
+
+
 class QuestionsManagerMixin:
 
     def __init_questions_manager__(self):
@@ -54,6 +76,7 @@ class QuestionsManagerMixin:
         self.question_seq = 0
         self.awaiting_input = None      # {'key':…, 'type': 'series'|'movie'}
         self.last_series_hint = None    # {'name':…, 'season':…}
+        self.pending_link = None        # enlace pegado a la espera de elegir archivo
         self.questions_file = os.path.join(os.path.dirname(self.config_file), "questions.json")
         self._question_runtime = {}     # clave -> {'notify_msg', 'base_text'} (solo en memoria)
         try:
@@ -84,10 +107,15 @@ class QuestionsManagerMixin:
 
     # ---------- crear la pregunta ----------
     def _question_text(self, q, extra=""):
+        if q.get('need_link'):
+            return (f"🔗 **Necesito el enlace de este archivo**\n📄 `{q['filename']}`\n\n"
+                    f"No lo encuentro con ese nombre. Envía el enlace de TMDB o TheTVDB "
+                    f"en un mensaje a este chat y lo coloco." + extra)
         text = f"❓ **¿Qué es este archivo?**\n📄 `{q['filename']}`\n"
         if q.get('caption'):
             text += f"💬 _{q['caption'][:200]}_\n"
-        text += "\nDímelo y lo colocaré bien en la biblioteca al terminar la descarga."
+        text += ("\nDímelo y lo colocaré bien en la biblioteca al terminar la descarga."
+                 "\n🔗 Lo más seguro es enviar su enlace de TMDB o TheTVDB en un mensaje a este chat.")
         return text + extra
 
     def _question_buttons(self, q):
@@ -99,6 +127,7 @@ class QuestionsManagerMixin:
             rows.append([Button.inline(label[:60], data=f"q_sug_{i}")])
         elif sug:
             rows.append([Button.inline(f"✅ 📺 {sug['name']} · {sug['season']}x{sug['episode']:02d}"[:60], data=f"q_sug_{i}")])
+        rows.append([Button.inline("🔗 Dar enlace de TMDB o TVDB", data=f"q_link_{i}")])
         rows.append([Button.inline("📺 Capítulo de serie", data=f"q_series_{i}"),
                      Button.inline("🎬 Película", data=f"q_movie_{i}")])
         hint = self.last_series_hint
@@ -187,6 +216,21 @@ class QuestionsManagerMixin:
             self.awaiting_input = {'key': key, 'type': 'movie'}
             await event.edit(self._question_text(q, "\n\n✍️ **Escribe el título y el año**, por ejemplo `Kraken 2025`"),
                              buttons=[[Button.inline("↩️ Atrás", data=f"q_back_{q['id']}")]])
+        elif action == 'use':
+            pending, self.pending_link = self.pending_link, None
+            try:
+                await event.delete()
+            except Exception:
+                pass
+            if pending:
+                self.awaiting_input = None
+                await self._handle_media_link(pending['link'], pending['text'], key)
+            else:
+                await event.answer("Vuelve a pegar el enlace", alert=True)
+        elif action == 'link':
+            self.awaiting_input = {'key': key, 'type': 'link'}
+            await event.edit(self._question_text(q, LINK_PROMPT),
+                             buttons=[[Button.inline("↩️ Atrás", data=f"q_back_{q['id']}")]])
         elif action == 'back':
             self.awaiting_input = None
             q['answer'] = None
@@ -198,8 +242,10 @@ class QuestionsManagerMixin:
         elif action == 'same':
             ep = number_in_name(q['filename'])
             hint = self.last_series_hint
-            await self._set_answer(key, q, {'type': 'series', 'name': hint['name'],
-                                            'season': hint['season'], 'episode': ep})
+            answer = {'type': 'series', 'name': hint['name'], 'season': hint['season'], 'episode': ep}
+            if hint.get('id'):
+                answer.update(db=hint['db'], id=hint['id'], linked=True)
+            await self._set_answer(key, q, answer)
         elif action == 'skip':
             await self._set_answer(key, q, {'type': 'skip'})
         self._save_questions()
@@ -210,17 +256,35 @@ class QuestionsManagerMixin:
         """Si hay una pregunta esperando texto, consume el mensaje. Devuelve True si lo usó."""
         aw = self.awaiting_input
         text = (event.message.message or "").strip() if event.message else ""
-        if not aw or not text or text.startswith('/'):
+        if not text or text.startswith('/'):
+            return False
+        link = media_links.find_link(text)
+        if link:
+            await self._delete_message(event)
+            await self._handle_media_link(link, text)
+            return True
+        # Un mensaje con vista previa solo llega aquí por si traía un enlace de TMDB o TVDB
+        if not aw or event.media:
             return False
         key = aw['key']
         q = self.media_questions.get(key)
         if q is None:
             self.awaiting_input = None
             return False
-        try:
-            await event.message.delete()
-        except Exception:
-            pass
+        await self._delete_message(event)
+        if aw['type'] == 'link':
+            await self._edit_question(q, "\n\n⚠️ Eso no es un enlace de TMDB ni de TheTVDB." + LINK_PROMPT,
+                                      [[Button.inline("↩️ Atrás", data=f"q_back_{q['id']}")]])
+            return True
+        if aw['type'] == 'series_link':
+            episode = episode_for_link(text, q['filename'])
+            if not episode:
+                await self._edit_question(q, "\n\n⚠️ No lo entiendo. Escribe por ejemplo `1x03`.",
+                                          [[Button.inline("↩️ Atrás", data=f"q_back_{q['id']}")]])
+                return True
+            self.awaiting_input = None
+            await self._set_answer(key, q, self._link_answer(aw['target'], episode))
+            return True
         if aw['type'] == 'series':
             m = SERIES_ANSWER.match(text)
             ep = None
@@ -238,6 +302,87 @@ class QuestionsManagerMixin:
         await self._set_answer(key, q, answer)
         return True
 
+    @staticmethod
+    async def _delete_message(event):
+        try:
+            await event.message.delete()
+        except Exception:
+            pass
+
+    # ---------- enlaces de TMDB y TheTVDB ----------
+    async def _link_target(self):
+        """A qué archivo se refiere un enlace pegado: la pregunta que espera texto o, si solo
+        hay un archivo posible, ese. Devuelve (clave, pregunta, nº de archivos posibles): con
+        varios no se adivina, porque colocaría un archivo como otra película."""
+        aw = self.awaiting_input
+        if aw and aw['key'] in self.media_questions:
+            return aw['key'], self.media_questions[aw['key']], 1
+        open_questions = [key for key, q in self.media_questions.items()
+                          if q['answer'] is None and q.get('kind') != 'replace']
+        if len(open_questions) == 1:
+            return open_questions[0], self.media_questions[open_questions[0]], 1
+        if open_questions:
+            return None, None, len(open_questions)
+        unidentified = [e for e in self.pending_entries() if e['kind'] == 'unidentified']
+        if len(unidentified) == 1:
+            await self.ask_for_pending(unidentified[0])
+            key = f"pend_{unidentified[0]['id']}"
+            return key, self.media_questions[key], 1
+        return None, None, len(unidentified)
+
+    async def _ask_which_file(self, link, text):
+        """Hay varios archivos esperando: el usuario elige para cuál es el enlace."""
+        questions = sorted((q for q in self.media_questions.values()
+                            if q['answer'] is None and q.get('kind') != 'replace'),
+                           key=lambda q: -q['id'])
+        if not questions:
+            await self._notify(self.client, self.raw_channel_id,
+                               "🔗 Hay varios archivos pendientes. Abre Biblioteca → Pendientes, "
+                               "elige uno y pulsa **Dar enlace**.")
+            return
+        self.pending_link = {'link': link, 'text': text}
+        buttons = [[Button.inline(f"📄 {q['filename'][:50]}", data=f"q_use_{q['id']}")] for q in questions[:8]]
+        await self.client.send_message(self.raw_channel_id, "🔗 **¿Para qué archivo es este enlace?**",
+                                       buttons=buttons)
+
+    @staticmethod
+    def _link_answer(target, episode=None):
+        name = target['title'] or f"{target['db']} {target['id']}"
+        answer = {'db': target['db'], 'id': target['id'], 'linked': bool(target['title'])}
+        if target['kind'] == 'movie':
+            return {**answer, 'type': 'movie', 'title': name, 'year': None}
+        return {**answer, 'type': 'series', 'name': name, 'season': episode[0], 'episode': episode[1]}
+
+    async def _handle_media_link(self, link, text, key=None):
+        q = self.media_questions.get(key) if key else None
+        if q is None:
+            key, q, candidates = await self._link_target()
+        if q is None:
+            if candidates:
+                await self._ask_which_file(link, text)
+                return
+            await self._notify(self.client, self.raw_channel_id,
+                               "🔗 He recibido el enlace, pero no hay ningún archivo esperando identificación.")
+            return
+        try:
+            target = await asyncio.to_thread(media_links.resolve, link)
+        except media_links.LinkError as e:
+            await self._edit_question(q, f"\n\n⚠️ {e}", self._question_buttons(q))
+            return
+        if target['kind'] == 'movie':
+            self.awaiting_input = None
+            await self._set_answer(key, q, self._link_answer(target))
+            return
+        episode = episode_for_link(media_links.text_without_link(text, link), q['filename'])
+        if not episode:
+            self.awaiting_input = {'key': key, 'type': 'series_link', 'target': target}
+            await self._edit_question(q, f"\n\n📺 **{target['title'] or target['id']}**\n"
+                                         f"✍️ ¿Qué temporada y capítulo es? Escríbelo así: `1x03`",
+                                      [[Button.inline("↩️ Atrás", data=f"q_back_{q['id']}")]])
+            return
+        self.awaiting_input = None
+        await self._set_answer(key, q, self._link_answer(target, episode))
+
     async def _edit_question(self, q, extra, buttons):
         if q.get('msg_id'):
             try:
@@ -247,18 +392,24 @@ class QuestionsManagerMixin:
 
     @staticmethod
     def describe_answer(a):
+        link = " 🔗" if a.get('id') else ""
         if a['type'] == 'series':
-            return f"📺 {a['name']} · {a['season']}x{a['episode']:02d}"
+            return f"📺 {a['name']} · {a['season']}x{a['episode']:02d}{link}"
         if a['type'] == 'movie':
-            return f"🎬 {a['title']}" + (f" ({a['year']})" if a.get('year') else "")
+            return f"🎬 {a['title']}" + (f" ({a['year']})" if a.get('year') else "") + link
         return "⏭️ No renombrar"
 
     async def _set_answer(self, key, q, answer):
         q['answer'] = answer
         if answer['type'] == 'series':
             self.last_series_hint = {'name': answer['name'], 'season': answer['season']}
+            if answer.get('id'):
+                self.last_series_hint.update(db=answer['db'], id=answer['id'])
         self._save_questions()
         if q.get('file') and os.path.exists(q['file']):
+            if answer.get('id'):
+                await self._notify(self.client, self.raw_channel_id,
+                                   f"🔗 `{q['filename']}`\n→ {self.describe_answer(answer)}")
             await self._close_question(key, q)
             await self.apply_answer(key, q)
         else:
@@ -332,10 +483,14 @@ class QuestionsManagerMixin:
             return
         if key.startswith('pend_'):
             self.resolve_history_entry(int(key.split('_', 1)[1]), 'indicado')
+        lookup = None
+        if answer.get('id'):
+            title = answer['title'] if answer['type'] == 'movie' else answer['name']
+            lookup = {'db': answer['db'], 'id': answer['id'], 'title': title if answer.get('linked') else None}
         await self.rename_media_file(new_path, self.client, self.raw_channel_id,
                                      notify_msg=rt.get('notify_msg'), base_text=rt.get('base_text', ''),
                                      size=rt.get('size'), force_type=answer['type'] if answer['type'] == 'movie' else 'series',
-                                     allow_staged=True, trusted=True)
+                                     allow_staged=True, trusted=True, lookup=lookup)
 
     # ---------- ya lo tienes: ¿reemplazar? ----------
     @staticmethod
@@ -442,14 +597,15 @@ class QuestionsManagerMixin:
         return {'type': 'series', 'name': ai['title'], 'season': ai.get('season') or 1, 'episode': ep,
                 'confidence': ai.get('confidence') or 0}
 
-    async def ask_for_pending(self, entry, suggest=None):
+    async def ask_for_pending(self, entry, suggest=None, need_link=False):
         """Preguntar qué es un archivo ya descargado (desde Pendientes, o en el momento si
         FileBot no lo identificó). suggest: {'name','season','episode'} para el botón rápido."""
         key = f"pend_{entry['id']}"
         self.media_questions.pop(key, None)
         self.question_seq += 1
         q = {'id': self.question_seq, 'filename': entry['title'], 'caption': "",
-             'answer': None, 'file': entry['path'], 'msg_id': None, 'suggest': suggest}
+             'answer': None, 'file': entry['path'], 'msg_id': None, 'suggest': suggest,
+             'need_link': need_link}
         self.media_questions[key] = q
         msg = await self.client.send_message(self.raw_channel_id, self._question_text(q), buttons=self._question_buttons(q))
         q['msg_id'] = msg.id

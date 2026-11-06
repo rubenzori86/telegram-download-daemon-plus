@@ -221,9 +221,10 @@ class PanelMixin:
         if e['kind'] == 'duplicate':
             text += "Ya tienes este título en la misma calidad. Puedes borrarlo o dejarlo donde está."
         else:
-            text += "Puedes reintentar (por ejemplo tras liberar espacio) o decir si es peli o serie."
+            text += "Si no lo identifica, dale el enlace de TMDB o TheTVDB. También puedes reintentar o decir si es peli o serie."
         i = e['id']
-        buttons = [
+        buttons = [] if e['kind'] == 'duplicate' else [[Button.inline("🔗 Dar enlace de TMDB o TVDB", data=f"pend_link_{i}")]]
+        buttons += [
             [Button.inline("✍️ Indicar qué es", data=f"pend_ask_{i}"), Button.inline("🔁 Reintentar", data=f"pend_retry_{i}")],
             [Button.inline("🎬 Es una peli", data=f"pend_movie_{i}"), Button.inline("📺 Es una serie", data=f"pend_series_{i}")],
             [Button.inline("🙈 Ignorar", data=f"pend_ignore_{i}"), Button.inline("🗑️ Borrar archivo", data=f"pend_delask_{i}")],
@@ -441,6 +442,12 @@ class PanelMixin:
                 if action == 'ask':
                     await self.ask_for_pending(entry)
                     await event.answer("Te he preguntado justo debajo")
+                    await self.refresh_sticky_menu()
+                    return True
+                if action == 'link':
+                    await self.ask_for_pending(entry, need_link=True)
+                    self.awaiting_input = {'key': f"pend_{entry['id']}", 'type': 'link'}
+                    await event.answer("Envía el enlace en un mensaje al chat")
                     await self.refresh_sticky_menu()
                     return True
                 if action == 'delask':

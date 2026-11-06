@@ -19,6 +19,7 @@ Todo se maneja desde un panel con botones dentro de Telegram.
   Nunca sobrescribe nada de lo que ya tienes.
 - **IA opcional (Groq)** para adivinar el título cuando el nombre del archivo es raro; FileBot siempre confirma.
 - Te **pregunta** por lo que no consigue identificar, guarda un historial y manda un resumen diario.
+- Si no acierta, pega el enlace de **TMDB o TheTVDB** de la peli o serie y lo identifica por su ID.
 
 ## Comandos
 

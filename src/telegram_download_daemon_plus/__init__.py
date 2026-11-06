@@ -358,7 +358,7 @@ class TelegramDownloadDaemon(
                         return
 
                     # Respuesta escrita a una pregunta («¿qué es este archivo?»)
-                    if not event.media and await self.handle_question_text(event):
+                    if (not event.media or hasattr(event.media, 'webpage')) and await self.handle_question_text(event):
                         return
 
                     # Comandos de texto

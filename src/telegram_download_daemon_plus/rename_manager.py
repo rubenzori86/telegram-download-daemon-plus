@@ -144,11 +144,12 @@ class RenameManagerMixin:
     def rename_staging_folder(self):
         return os.path.join(self.rename_output_folder, ".staging")
 
-    def _filebot_rename_sync(self, file_path, is_episode, strict=True, action="move", query=None):
+    def _filebot_rename_sync(self, file_path, is_episode, strict=True, action="move", query=None,
+                             db=None, filter_expr=None):
         os.makedirs(self.rename_staging_folder, exist_ok=True)
         cmd = [
             FILEBOT_BIN, "-rename", file_path,
-            "--db", "TheTVDB" if is_episode else "TheMovieDB",
+            "--db", db or ("TheTVDB" if is_episode else "TheMovieDB"),
             "--lang", FILEBOT_LANG,
             "--action", action,
             "--conflict", "index",
@@ -160,6 +161,8 @@ class RenameManagerMixin:
         if query:
             # una sola búsqueda: evita «Multiple queries … requires -non-strict»
             cmd += ["--q", query]
+        if filter_expr:
+            cmd += ["--filter", filter_expr]
         # Sin atributos extendidos: identificar siempre por el nombre, no por lo que
         # FileBot guardó en el archivo (o en otro hardlink del mismo archivo)
         env = dict(os.environ)
@@ -169,10 +172,28 @@ class RenameManagerMixin:
             text=True, errors='ignore', timeout=600, env=env,
         )
 
-    def _identify_and_move_sync(self, file_path, is_episode, trusted=False):
+    def _identify_by_id_sync(self, file_path, is_episode, lookup):
+        """El usuario ha pegado un enlace. Solo TheTVDB busca por número; en TheMovieDB --q
+        siempre es texto ('1559984' encuentra «1984»), así que se busca por el nombre del
+        enlace. En ambos casos el filtro garantiza que solo se acepta ese ID exacto."""
+        id_filter = f"id.toString() == '{lookup['id']}'"
+        result = None
+        queries = (lookup['id'], lookup.get('title')) if lookup['db'] == 'TheTVDB' else (lookup.get('title'),)
+        for query in queries:
+            if not query:
+                continue
+            result = self._filebot_rename_sync(file_path, is_episode, strict=False, query=query,
+                                               db=lookup['db'], filter_expr=id_filter)
+            if result.returncode == 0 and MOVE_RE.search(result.stdout or ''):
+                break
+        return result
+
+    def _identify_and_move_sync(self, file_path, is_episode, trusted=False, lookup=None):
         """Modo estricto primero. Para pelis, si falla y el nombre trae año, se
         reintenta en modo no estricto solo si la película encontrada es de ese año
         (evita falsos positivos tipo 'archivo_raro.mkv' -> 'Sin (1915)')."""
+        if lookup:
+            return self._identify_by_id_sync(file_path, is_episode, lookup)
         if is_episode:
             return self._identify_episode_sync(file_path, trusted)
         result = self._filebot_rename_sync(file_path, is_episode)
@@ -274,10 +295,12 @@ class RenameManagerMixin:
             await self._notify(client, peer_channel, line)
 
     async def rename_media_file(self, file_path, client=None, peer_channel=None, notify_msg=None,
-                                base_text="", size=None, force_type=None, allow_staged=False, trusted=False):
+                                base_text="", size=None, force_type=None, allow_staged=False, trusted=False,
+                                lookup=None):
         """Renombra un vídeo si es peli o serie y lo coloca en la biblioteca.
         force_type: 'movie' / 'series' para saltarse la detección automática.
         allow_staged: permite reprocesar archivos que se quedaron en renombrados/.
+        lookup: {'db', 'id', 'title'} si el usuario ha dado un enlace de TMDB o TVDB.
         Devuelve la nueva ruta o None."""
         if not getattr(self, 'auto_rename', False) and not allow_staged:
             return None
@@ -308,7 +331,7 @@ class RenameManagerMixin:
 
         async with self.rename_lock:
             try:
-                result = await asyncio.to_thread(self._identify_and_move_sync, file_path, is_episode, trusted)
+                result = await asyncio.to_thread(self._identify_and_move_sync, file_path, is_episode, trusted, lookup)
             except Exception as e:
                 logger.error("Error ejecutando FileBot para %s: %s", filename, e)
                 return None
@@ -357,8 +380,19 @@ class RenameManagerMixin:
                     except Exception as e:
                         logger.warning("No se pudo preguntar por %s: %s", filename, e)
                     return None
+                probado = f"{lookup['db']} {lookup['id']}" if lookup else f"probé como {tipo}"
+                if hasattr(self, 'ask_for_pending'):
+                    # ni con la indicación del usuario: se le pide el enlace aquí mismo
+                    await self._report(client, peer_channel,
+                                       f"❓ **No identificada** ({probado}) · te pido el enlace justo debajo",
+                                       notify_msg, base_text)
+                    try:
+                        await self.ask_for_pending(entry, need_link=True)
+                        return None
+                    except Exception as e:
+                        logger.warning("No se pudo pedir el enlace de %s: %s", filename, e)
                 await self._report(client, peer_channel,
-                                   f"❓ **No identificada** (probé como {tipo}) · se queda como está\n"
+                                   f"❓ **No identificada** ({probado}) · se queda como está\n"
                                    f"_Biblioteca → Pendientes · #{entry['id']}_",
                                    notify_msg, base_text)
                 return None

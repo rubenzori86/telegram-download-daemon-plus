@@ -2,6 +2,12 @@
 
 Aquí se anotan los cambios de cada versión.
 
+## [1.3.0] - 2026-11-06
+
+### Añadido
+
+- **Archivos `.torrent`:** con `TORRENTS_DIR` definida, los `.torrent` enviados al canal van a esa carpeta para que los recoja tu cliente de torrents. Después hay que aplicar el cambio con `docker compose up -d`.
+
 ## [1.2.1] - 2026-11-06
 
 ### Añadido
@@ -25,5 +31,6 @@ Aquí se anotan los cambios de cada versión.
 
 - Los enlaces con vista previa de Telegram ya no se tratan como comandos.
 
+[1.3.0]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.3.0
 [1.2.1]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.2.1
 [1.2.0]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.2.0

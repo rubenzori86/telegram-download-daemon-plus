@@ -25,6 +25,7 @@ from .panel import PanelMixin
 from .questions_manager import QuestionsManagerMixin
 from .session_manager import get_session, save_session, TELEGRAM_DAEMON_SESSION_PATH
 from .status_manager import StatusManagerMixin
+from .torrent_manager import TorrentManagerMixin
 from .update_manager import UpdateManagerMixin
 from .utils import UtilsMixin, sanitize_path_component
 
@@ -49,6 +50,7 @@ class TelegramDownloadDaemon(
     PanelMixin,
     QuestionsManagerMixin,
     UpdateManagerMixin,
+    TorrentManagerMixin,
     CompletionManagerMixin,
     MenuManagerMixin,
     DownloadEngineMixin,

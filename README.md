@@ -74,6 +74,9 @@ El bot tiene que ser administrador del canal.
 - **Biblioteca**: copia `docker-compose.override.example.yml` como `docker-compose.override.yml`,
   monta ahí tus discos y ponlos en `LIBRARY_DISKS` del `.env`. Prueba primero con `LIBRARY_DRY_RUN=1`.
 - **IA**: crea una clave gratis en https://console.groq.com y ponla en `GROQ_API_KEY`.
+- **Torrents**: pon en `TORRENTS_DIR` la carpeta que vigila tu cliente de torrents (Download Station,
+  qBittorrent...) y aplica el cambio con `docker compose up -d`. Los `.torrent` que envíes al canal
+  irán a esa carpeta. El bot no sigue la descarga: de eso se encarga el cliente.
 
 ### Datos que se guardan
 

@@ -409,3 +409,6 @@ filebot-pro/
 filebot-data/
 *.session
 *.session-journal
+
+# Carpeta de .torrent por defecto
+torrents/

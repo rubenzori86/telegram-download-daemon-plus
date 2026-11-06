@@ -435,6 +435,13 @@ class DownloadEngineMixin:
 
                 await self.set_progress(item['filename'], reply_msg, size, size)
 
+                if self.wants_torrent_folder(item['filename']):
+                    await self.deliver_torrent(temp_filepath, item['filename'], size, link,
+                                               getattr(download_item, 'message_id', None), reply_msg)
+                    success = True
+                    queue.task_done()
+                    continue
+
                 if not os.path.exists(final_filepath_folder):
                     os.makedirs(final_filepath_folder)
                 move(temp_filepath, final_filepath)

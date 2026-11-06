@@ -7,6 +7,8 @@ services:
     env_file: .env
     volumes:
       - ${DOWNLOADS_DIR:-./downloads}:/downloads
+      # Carpeta para los .torrent (TORRENTS_DIR en .env)
+      - ${TORRENTS_DIR:-./torrents}:/torrents
       - ./session:/session
       - ./temp:/temp
       # FileBot (opcional): pon aquí tu instalación de FileBot

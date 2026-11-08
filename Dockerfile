@@ -11,6 +11,10 @@ ENV LANG=C.UTF-8 \
     FILEBOT_BIN=/opt/filebot-pro/bin/filebot-pro \
     JAVA_TOOL_OPTIONS="-Djava.awt.headless=true -Xmx512m -Dapplication.dir=/filebot-data -Duser.home=/filebot-data -Dsun.jnu.encoding=UTF-8 -Dfile.encoding=UTF-8"
 
+# Versión de la imagen: súbela (y REQUIRED_IMAGE en launcher.py) solo cuando cambien los
+# programas del sistema. Con el resto de cambios el bot se actualiza solo desde Telegram.
+ENV TDD_IMAGE=1
+
 # Carpeta de trabajo
 WORKDIR /usr/src/app
 

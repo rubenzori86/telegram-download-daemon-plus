@@ -443,6 +443,7 @@ class TelegramDownloadDaemon(
                     signal.signal(signal.SIGINT, _sync_signal_handler)
 
                 await self.send_hello_message(version, client, self.raw_channel_id)
+                await self.announce_start()
 
                 if self.user_client:
                     await asyncio.gather(

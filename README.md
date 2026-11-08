@@ -84,6 +84,11 @@ El bot tiene que ser administrador del canal.
 - **Torrents con otro cliente**: pon en `TORRENTS_DIR` la carpeta que vigila tu cliente de torrents
   (qBittorrent...) y aplica el cambio con `docker compose up -d`. Los `.torrent` que envíes al canal
   irán a esa carpeta. El bot no sigue la descarga: de eso se encarga el cliente.
+- **Actualizar**: cuando hay versión nueva el bot avisa en el canal con un botón **Actualizar**. La
+  descarga de GitHub, comprueba que carga y se reinicia; si no arrancara, vuelve solo a la anterior.
+  También en **Sistema → Buscar actualizaciones**, con opción de volver a la versión anterior.
+  Solo hace falta reconstruir a mano (`git pull` + `docker compose up -d --build`) cuando una versión
+  cambia los programas del sistema, y el bot te lo dice. Necesita `restart: unless-stopped` en el compose.
 - **Nombres y MKV**: en **Ajustes → Nombres y MKV** puedes quitar la calidad (`[1080p]`) y el códec
   (`[h264]`) del nombre de las películas, y pasar los MP4 a MKV sin recomprimir.
 

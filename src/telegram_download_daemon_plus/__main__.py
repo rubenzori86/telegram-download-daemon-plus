@@ -83,6 +83,9 @@ parser.add_argument(
 
 
 def main():
+    # Si se ha actualizado desde el bot, arrancar con la versión descargada
+    from .launcher import maybe_reexec
+    maybe_reexec(__version__)
     args = parser.parse_args()
     if args.setup_user_login:
         from .setup_login import setup_user_login

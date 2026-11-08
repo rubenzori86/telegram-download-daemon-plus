@@ -330,6 +330,10 @@ class BotMenu:
                 Button.inline("📊 Progreso Individual", data="menu_config_progress")
             ],
             [
+                Button.inline("🏷️ Nombres y MKV", data="menu_naming"),
+                Button.inline("🧲 Download Station", data="menu_ds")
+            ],
+            [
                 Button.inline("🏷️ Renombrar: " + ("✅" if current_config.get('auto_rename') else "❌"),
                               data="cmd_renombrar_" + ("off" if current_config.get('auto_rename') else "on")),
                 Button.inline("🌙 Resumen: " + ("✅" if current_config.get('daily_summary') else "❌"),

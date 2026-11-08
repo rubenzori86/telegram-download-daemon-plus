@@ -33,7 +33,8 @@ MOVIE_CATEGORY = {
 }
 
 FOLDER_RE = re.compile(r'^(?P<title>.*?)\s*\(?(?P<year>(?:19|20)\d{2})\)?\s*$')
-MOVIE_RE = re.compile(r'^(?P<title>.+?) \((?P<year>\d{4})\) \[(?P<res>[^\]]+)\]')
+# La calidad [1080p] puede no estar si se ha quitado del nombre en Ajustes
+MOVIE_RE = re.compile(r'^(?P<title>.+?) \((?P<year>\d{4})\)(?: \[(?P<res>[^\]]+)\])?')
 EPISODE_RE = re.compile(r' - (?P<code>\d{2,3}x\d{2,4}) - ')
 
 
@@ -120,7 +121,9 @@ def movie_exists(title, year, is_4k):
             m = MOVIE_RE.match(f)
             if not m or (normalize(m.group('title')), m.group('year')) != key:
                 continue
-            if (m.group('res').lower() == '2160p') == is_4k:
+            res = m.group('res')
+            # sin calidad en el nombre no se sabe si es 4K: se avisa como posible duplicado
+            if res is None or (res.lower() == '2160p') == is_4k:
                 found.append(os.path.join(cat_path, f))
     return found
 
@@ -169,7 +172,7 @@ def plan_movie(staged_path, is_anim):
     m = MOVIE_RE.match(filename)
     if not m:
         return {'ok': False, 'reason': f"nombre de película no reconocido: '{filename}'"}
-    is_4k = m.group('res').lower() == '2160p'
+    is_4k = (m.group('res') or '').lower() == '2160p'
     dupes = movie_exists(m.group('title'), m.group('year'), is_4k)
     if dupes:
         disk = next((d for d, root in LIBRARY_DISKS if dupes[0].startswith(root + os.sep)), '?')

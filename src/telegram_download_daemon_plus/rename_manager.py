@@ -269,6 +269,9 @@ class RenameManagerMixin:
         rel = os.path.relpath(staged_path, self.rename_staging_folder)
         is_anim = rel.split(os.sep, 1)[0] == 'anim'
         plan = library.plan_series(staged_path, is_anim) if is_episode else library.plan_movie(staged_path, is_anim)
+        if not is_episode:
+            staged_path, plan = self._apply_movie_name(staged_path, plan)
+            rel = os.path.relpath(staged_path, self.rename_staging_folder)
         if plan['ok'] and not LIBRARY_DRY_RUN:
             try:
                 return library.move_into_library(staged_path, plan['dest']), plan
@@ -286,6 +289,23 @@ class RenameManagerMixin:
         except OSError:
             pass
         return fallback, plan
+
+    def _apply_movie_name(self, staged_path, plan):
+        """Quita del nombre las etiquetas desactivadas en Ajustes → Nombres y MKV. Se hace
+        después de decidir el destino, que necesita la calidad para separar las 4K."""
+        name = os.path.basename(staged_path)
+        new = self.final_movie_name(name) if hasattr(self, 'final_movie_name') else name
+        if new == name:
+            return staged_path, plan
+        new_path = os.path.join(os.path.dirname(staged_path), new)
+        if os.path.exists(new_path):
+            return staged_path, plan
+        os.rename(staged_path, new_path)
+        plan = dict(plan)
+        for key in ('dest', 'dest_if_replace'):
+            if plan.get(key):
+                plan[key] = os.path.join(os.path.dirname(plan[key]), new)
+        return new_path, plan
 
     async def _report(self, client, peer_channel, line, notify_msg=None, base_text=""):
         """Añade el resultado al aviso de la descarga (si lo hay) o envía uno nuevo."""

@@ -74,9 +74,18 @@ El bot tiene que ser administrador del canal.
 - **Biblioteca**: copia `docker-compose.override.example.yml` como `docker-compose.override.yml`,
   monta ahí tus discos y ponlos en `LIBRARY_DISKS` del `.env`. Prueba primero con `LIBRARY_DRY_RUN=1`.
 - **IA**: crea una clave gratis en https://console.groq.com y ponla en `GROQ_API_KEY`.
-- **Torrents**: pon en `TORRENTS_DIR` la carpeta que vigila tu cliente de torrents (Download Station,
-  qBittorrent...) y aplica el cambio con `docker compose up -d`. Los `.torrent` que envíes al canal
+- **Download Station**: en **Ajustes → Download Station** el bot te pide la dirección del NAS, el
+  usuario y la contraseña (la borra del chat y la guarda cifrada en `session/`). Desde ese momento
+  verás su progreso en Descargas, los `.torrent` y los enlaces `magnet:` del canal irán a Download
+  Station y lo que termine se colocará en la biblioteca. Para eso el contenedor tiene que ver la
+  carpeta de destino de Download Station con la misma ruta (por ejemplo `/volume1/video:/volume1/video`
+  en `docker-compose.override.yml`). Si la cuenta tiene verificación en dos pasos, el bot te pide el código
+  una sola vez y el NAS lo recuerda como dispositivo de confianza.
+- **Torrents con otro cliente**: pon en `TORRENTS_DIR` la carpeta que vigila tu cliente de torrents
+  (qBittorrent...) y aplica el cambio con `docker compose up -d`. Los `.torrent` que envíes al canal
   irán a esa carpeta. El bot no sigue la descarga: de eso se encarga el cliente.
+- **Nombres y MKV**: en **Ajustes → Nombres y MKV** puedes quitar la calidad (`[1080p]`) y el códec
+  (`[h264]`) del nombre de las películas, y pasar los MP4 a MKV sin recomprimir.
 
 ### Datos que se guardan
 

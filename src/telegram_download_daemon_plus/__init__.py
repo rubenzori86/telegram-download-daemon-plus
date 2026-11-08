@@ -26,6 +26,8 @@ from .questions_manager import QuestionsManagerMixin
 from .session_manager import get_session, save_session, TELEGRAM_DAEMON_SESSION_PATH
 from .status_manager import StatusManagerMixin
 from .torrent_manager import TorrentManagerMixin
+from .media_tools import MediaToolsMixin
+from .downloadstation import DownloadStationMixin
 from .update_manager import UpdateManagerMixin
 from .utils import UtilsMixin, sanitize_path_component
 
@@ -51,6 +53,8 @@ class TelegramDownloadDaemon(
     QuestionsManagerMixin,
     UpdateManagerMixin,
     TorrentManagerMixin,
+    MediaToolsMixin,
+    DownloadStationMixin,
     CompletionManagerMixin,
     MenuManagerMixin,
     DownloadEngineMixin,
@@ -127,7 +131,9 @@ class TelegramDownloadDaemon(
         self.__init_history_manager__()
         self.__init_questions_manager__()
         self.__init_update_manager__()
+        self.__init_media_tools__()
         self.load_config()
+        self.__init_download_station__()
 
     async def send_hello_message(self, version, client_ref, peer_channel):
         """Envía el mensaje de bienvenida y el menú interactivo al canal configurado."""
@@ -362,6 +368,10 @@ class TelegramDownloadDaemon(
                             await self.log_reply(event, f"Error procesando mensaje reenviado: {str(e)}")
                         return
 
+                    # Asistente de Download Station y enlaces magnet
+                    if await self.handle_ds_text(event):
+                        return
+
                     # Respuesta escrita a una pregunta («¿qué es este archivo?»)
                     if (not event.media or hasattr(event.media, 'webpage')) and await self.handle_question_text(event):
                         return
@@ -414,6 +424,7 @@ class TelegramDownloadDaemon(
                 summary_task = loop.create_task(self.daily_summary_loop(client, self.raw_channel_id))
                 panel_task = loop.create_task(self.panel_autorefresh_loop())
                 loop.create_task(self.update_check_loop())
+                loop.create_task(self.ds_monitor_loop(client, self.raw_channel_id))
                 loop.create_task(self.ask_for_queued(queue))
                 loop.create_task(self.recover_staging(client, self.raw_channel_id))
 

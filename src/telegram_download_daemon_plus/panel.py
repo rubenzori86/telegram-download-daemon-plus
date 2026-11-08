@@ -19,7 +19,7 @@ from .history_manager import KIND_ICON, PENDING_KINDS, fmt_duration, fmt_when, h
 
 logger = logging.getLogger(__name__)
 
-DAEMON_VERSION = "1.3.0"
+DAEMON_VERSION = "1.4.0"
 # Velocidad máxima observada para cuentas sin Premium (Telegram limita por cuenta)
 ACCOUNT_SPEED_NOTE = "≈5 MB/s por cuenta sin Premium"
 
@@ -110,6 +110,7 @@ class PanelMixin:
             text += f"   ⚡ Total: {hsize(self._total_speed())}/s ({ACCOUNT_SPEED_NOTE})\n\n"
         else:
             text += "⚡ Sin descargas activas\n\n"
+        text += self.ds_downloads_text(bar, hsize, short)
         if queued:
             text += f"📋 **En cola ({len(queued)})**\n"
             for it in queued[:6]:
@@ -389,6 +390,10 @@ class PanelMixin:
                                    'menu_files': 'downloads', 'menu_status': 'downloads'}.get(data, 'other')
                 await self._safe_edit(event, text, buttons)
                 self._panel_last_text = text
+                return True
+            if await self.handle_media_settings_callback(event, data):
+                return True
+            if await self.handle_ds_callback(event, data):
                 return True
             if data == 'menu_update_check':
                 await event.answer("Buscando en GitHub…")

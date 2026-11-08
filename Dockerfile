@@ -25,6 +25,7 @@ RUN apt-get update \
        unrar-free \
        unar \
        libmediainfo0v5 \
+       mkvtoolnix \
     && rm -rf /var/lib/apt/lists/* \
     && pip install -r requirements.txt
 

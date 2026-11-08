@@ -52,6 +52,10 @@ class ConfigManagerMixin:
                     self.individual_progress_messages = config['individual_progress_messages']
                     print(f"✅ Configuración cargada: individual_progress_messages = {self.individual_progress_messages}")
 
+                for key in ('name_quality', 'name_codec', 'remux_mp4'):
+                    if key in config:
+                        setattr(self, key, bool(config[key]))
+
                 if 'account_mode' in config:
                     self.account_mode = config['account_mode']
                     print(f"✅ Configuración cargada: account_mode = {self.account_mode}")
@@ -84,6 +88,9 @@ class ConfigManagerMixin:
                 'daily_summary_enabled': getattr(self, 'daily_summary_enabled', True),
                 'individual_progress_messages': getattr(self, 'individual_progress_messages', False),
                 'account_mode': getattr(self, 'account_mode', 'bot'),
+                'name_quality': getattr(self, 'name_quality', True),
+                'name_codec': getattr(self, 'name_codec', True),
+                'remux_mp4': getattr(self, 'remux_mp4', False),
                 'user_phone': getattr(self, 'user_phone', None),
                 'last_updated': time.strftime('%Y-%m-%d %H:%M:%S')
             }

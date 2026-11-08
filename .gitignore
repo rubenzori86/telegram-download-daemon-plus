@@ -410,5 +410,6 @@ filebot-data/
 *.session
 *.session-journal
 
-# Carpeta de .torrent por defecto
-torrents/
+# Carpeta de .torrent por defecto (se incluye vacía: el Docker de Synology no crea las carpetas que faltan)
+torrents/*
+!torrents/.gitkeep

@@ -447,6 +447,10 @@ class DownloadEngineMixin:
                 move(temp_filepath, final_filepath)
                 final_filename = item['filename'] if 'filename' in item else filename
                 link = item['download_media'].get_link()
+                remuxed = await self.maybe_remux(final_filepath)
+                if remuxed != final_filepath:
+                    final_filepath = remuxed
+                    final_filename = os.path.basename(remuxed)
 
                 download_msg_id = None
                 COMPRESSED_EXTENSIONS = {'.rar', '.zip', '.7z', '.r00', '.r01'}

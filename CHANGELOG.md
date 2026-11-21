@@ -16,7 +16,7 @@ Aquí se anotan los cambios de cada versión.
 
 ### Actualizado
 
-- Python 3.15 en la imagen, y cffi 2.1.1, cryptg 0.6.0, humanize 4.16.0, pyasn1 0.6.5 y pycparser 3.12.
+- Python 3.14 en la imagen (la 3.15 aún no sirve: cryptg, que acelera las descargas de Telegram, no tiene versión para ella), y cffi 2.1.1, cryptg 0.6.0, humanize 4.16.0, pyasn1 0.6.5 y pycparser 3.12.
 - Acciones de GitHub: checkout v7 y CodeQL v4.
 
 ### Para actualizar

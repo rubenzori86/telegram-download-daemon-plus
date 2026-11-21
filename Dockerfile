@@ -1,4 +1,5 @@
-FROM python:3.15
+# 3.14 y no 3.15: cryptg (descargas rápidas de Telegram) aún no tiene ruedas para 3.15
+FROM python:3.14
 
 # Variables de entorno
 ENV TELEGRAM_DAEMON_DEST="/downloads"

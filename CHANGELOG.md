@@ -2,6 +2,27 @@
 
 Aquí se anotan los cambios de cada versión.
 
+## [1.6.0] - 2026-11-21
+
+### Añadido
+
+- **Días de compartir en Download Station:** en Ajustes → Download Station eliges cuánto se comparte lo terminado (1, 3, 5, 7, 10, 15, 20 o 30 días, o indefinido). Al cumplirse lo quita de Download Station y borra el archivo, solo si ya está en tu biblioteca; si no, deja el archivo y avisa.
+- **Terminados:** lista de lo terminado en Download Station con los días que le quedan y botones para quitarlo a mano (con o sin borrar el archivo).
+
+### Corregido
+
+- **Enviar un .torrent a Download Station** fallaba siempre con el error 101: ahora usa la API DownloadStation2, la que acepta archivos.
+- Si la sesión con Download Station caducaba, el bot no volvía a entrar hasta reiniciarse.
+
+### Actualizado
+
+- Python 3.15 en la imagen, y cffi 2.1.1, cryptg 0.6.0, humanize 4.16.0, pyasn1 0.6.5 y pycparser 3.12.
+- Acciones de GitHub: checkout v7 y CodeQL v4.
+
+### Para actualizar
+
+- Esta vez hay que reconstruir la imagen, porque cambia la versión de Python: `git pull` y `docker compose up -d --build`.
+
 ## [1.5.1] - 2026-11-21
 
 ### Corregido
@@ -51,6 +72,7 @@ Aquí se anotan los cambios de cada versión.
 
 - Los enlaces con vista previa de Telegram ya no se tratan como comandos.
 
+[1.6.0]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.6.0
 [1.5.1]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.5.1
 [1.5.0]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.5.0
 [1.3.0]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.3.0

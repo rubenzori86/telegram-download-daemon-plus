@@ -41,6 +41,13 @@ POLL_ACTIVE = 15
 STABLE_SECONDS = 120
 STABLE_POLL = 15
 STABLE_MAX = 12 * 3600
+# Días que se sigue compartiendo lo terminado antes de quitarlo (None = hasta que lo borres tú)
+SEED_OPTIONS = (1, 3, 5, 7, 10, 15, 20, 30)
+DAY = 86400
+
+
+def seed_label(days):
+    return f"{days} día{'s' if days != 1 else ''}" if days else "indefinido"
 POLL_IDLE = 60
 TIMEOUT = 20
 DEVICE_NAME = "Telegram Download Daemon"
@@ -149,8 +156,10 @@ class DSClient:
         # NAS de casa con certificado propio: no se comprueba el certificado
         self.ctx = ssl._create_unverified_context() if self.url.startswith('https') else None
 
-    def _request(self, path, fields, file=None):
+    def _request(self, path, fields, file=None, file_field="file", query=None):
         url = f"{self.url}/webapi/{path}"
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
         if file:
             boundary = uuid.uuid4().hex
             body = b""
@@ -158,7 +167,7 @@ class DSClient:
                 body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n").encode()
             name, content = file
             safe = name.replace('"', '')
-            body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{safe}\"\r\n"
+            body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; filename=\"{safe}\"\r\n"
                      "Content-Type: application/x-bittorrent\r\n\r\n").encode() + content + f"\r\n--{boundary}--\r\n".encode()
             headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
         else:
@@ -195,19 +204,23 @@ class DSClient:
         if not self.sid:
             raise DSError(-1, "el NAS no ha devuelto sesión")
 
-    def _call(self, fields, file=None):
+    def _authed(self, send):
+        """Llama con sesión; si ha caducado, vuelve a entrar una vez."""
         for attempt in (1, 2):
             if not self.sid:
                 self.login()
             try:
-                return self._request("DownloadStation/task.cgi",
-                                     {"api": "SYNO.DownloadStation.Task", "version": 1, **fields, "_sid": self.sid},
-                                     file)
+                return send()
             except DSError as e:
-                if e.code in SESSION_ERRORS and attempt == 1:
+                # con una sesión caducada DSM 7 responde 105 («sin permiso»), no 106/119
+                if (e.code in SESSION_ERRORS or e.code == 105) and attempt == 1:
                     self.sid = None
                     continue
                 raise
+
+    def _call(self, fields):
+        return self._authed(lambda: self._request(
+            "DownloadStation/task.cgi", {"api": "SYNO.DownloadStation.Task", "version": 1, **fields, "_sid": self.sid}))
 
     def tasks(self):
         return self._call({"method": "list", "additional": "detail,transfer"}).get('tasks', [])
@@ -215,8 +228,25 @@ class DSClient:
     def add_uri(self, uri):
         self._call({"method": "create", "uri": uri})
 
+    def default_destination(self):
+        data = self._authed(lambda: self._request(
+            "DownloadStation/info.cgi",
+            {"api": "SYNO.DownloadStation.Info", "version": 1, "method": "getconfig", "_sid": self.sid}))
+        return data.get('default_destination') or ""
+
     def add_torrent(self, name, content):
-        self._call({"method": "create"}, file=(name, content))
+        """Subir un .torrent solo funciona con la API DownloadStation2 y la sesión en la
+        dirección: la API antigua responde siempre error 101 (probado contra DSM 7)."""
+        dest = self.default_destination()
+        self._authed(lambda: self._request(
+            "entry.cgi",
+            {"api": "SYNO.DownloadStation2.Task", "version": 2, "method": "create", "type": '"file"',
+             "file": '["torrent"]', "create_list": "false", "destination": json.dumps(dest)},
+            file=(name, content), file_field="torrent", query={"_sid": self.sid}))
+
+    def delete_task(self, task_id):
+        """Quita la tarea de Download Station (los archivos descargados no se tocan)."""
+        self._call({"method": "delete", "id": task_id, "force_complete": "false"})
 
 
 def task_line(t, bar, hsize):
@@ -324,17 +354,78 @@ class DownloadStationMixin:
                 pass
 
     async def _ds_check_finished(self, tasks, client, peer):
-        done_ids = set(self.ds_conf.get('done_ids', []))
+        conf = self.ds_conf
+        done_ids = set(conf.get('done_ids', []))
         present = {t['id'] for t in tasks}
         pruned = done_ids & present
-        if pruned != done_ids:
-            self.ds_conf['done_ids'] = sorted(pruned)
+        changed = pruned != done_ids
+        conf['done_ids'] = sorted(pruned)
+        # cuándo terminó cada tarea (para el plazo de compartir) y si ya está en la biblioteca
+        fin = {k: v for k, v in conf.get('finished_at', {}).items() if k in present}
+        placed = {k: v for k, v in conf.get('placed', {}).items() if k in present}
+        for t in tasks:
+            if t.get('status') in DONE and t['id'] not in fin:
+                completed = ((t.get('additional') or {}).get('detail') or {}).get('completed_time') or 0
+                fin[t['id']] = completed if completed > 0 else time.time()
+        changed = changed or fin != conf.get('finished_at', {}) or placed != conf.get('placed', {})
+        conf['finished_at'], conf['placed'] = fin, placed
+        if changed:
             self._ds_save()
         for t in tasks:
             if t.get('status') in DONE and t['id'] not in pruned and t['id'] not in self._ds_inflight:
                 # en segundo plano: esperar a que el archivo se asiente puede llevar minutos
                 self._ds_inflight.add(t['id'])
                 asyncio.create_task(self._ds_process(t, client, peer))
+        await self._ds_apply_seed_limit(tasks, client, peer)
+
+    async def _ds_apply_seed_limit(self, tasks, client, peer):
+        """Quita lo que lleva compartiéndose más días de los elegidos. Solo lo ya procesado:
+        nunca algo que el bot aún no ha colocado o está colocando."""
+        days = self.ds_conf.get('seed_days')
+        if not days:
+            return
+        done = set(self.ds_conf.get('done_ids', []))
+        fin = self.ds_conf.get('finished_at', {})
+        for t in tasks:
+            tid = t['id']
+            if (t.get('status') in DONE and tid in done and tid not in self._ds_inflight
+                    and tid in fin and time.time() - fin[tid] >= days * DAY):
+                placed = bool(self.ds_conf.get('placed', {}).get(tid))
+                try:
+                    note = await self._ds_remove(t, delete_files=placed)
+                except Exception as e:
+                    logger.warning("No se pudo quitar %s de Download Station: %s", t.get('title'), e)
+                    continue
+                text = (f"🧹 **Dejo de compartir** `{t.get('title', '?')}`\n"
+                        f"Llevaba {seed_label(days)} compartiéndose. {note}")
+                try:
+                    await client.send_message(peer, text)
+                except Exception as e:
+                    logger.debug("No se pudo avisar: %s", e)
+
+    async def _ds_remove(self, t, delete_files):
+        """Quita la tarea y, si se pide, sus archivos. Devuelve una frase para el aviso."""
+        await self.ds_call('delete_task', t['id'])
+        self._ds_wake.set()
+        note = "La he quitado de Download Station."
+        title = t.get('title') or ''
+        destination = ((t.get('additional') or {}).get('detail') or {}).get('destination', '')
+        path = self._ds_local_path(destination, title)
+        if not delete_files:
+            if path:
+                note += f" El archivo sigue en `{destination}` porque no está en tu biblioteca."
+            return note
+        # seguridad: solo la entrada de esa tarea dentro de su carpeta de destino
+        if (not path or not title or title in ('.', '..') or os.path.basename(path) != title
+                or not os.path.abspath(path).startswith('/volume')):
+            return note + " No he encontrado su archivo para borrarlo."
+        def rm():
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+        await asyncio.to_thread(rm)
+        return note + " También he borrado su archivo: la copia de tu biblioteca sigue intacta."
 
     async def _ds_process(self, t, client, peer):
         try:
@@ -452,11 +543,24 @@ class DownloadStationMixin:
             await self._ds_edit(client, peer, msg, text)
             return
         await self._ds_edit(client, peer, msg, text + "\n🏷️ _Identificando…_")
+        all_placed = True
         for v in videos:
             copy = await asyncio.to_thread(self._ds_copy_for_library, v)
             copy = await self.maybe_remux(copy)
-            await self.rename_media_file(copy, client, peer, notify_msg=msg if len(videos) == 1 else None,
-                                         base_text=text if len(videos) == 1 else "")
+            final = await self.rename_media_file(copy, client, peer, notify_msg=msg if len(videos) == 1 else None,
+                                                 base_text=text if len(videos) == 1 else "")
+            if not self._in_library(final):
+                all_placed = False
+        if all_placed:
+            # solo así se puede borrar luego el original sin perder nada
+            self.ds_conf.setdefault('placed', {})[t['id']] = True
+
+    def _in_library(self, final):
+        """¿Ha acabado en la biblioteca? (no en renombrados/ ni sin identificar)."""
+        if not final or not os.path.exists(final):
+            return False
+        out = getattr(self, 'rename_output_folder', None)
+        return not (out and os.path.abspath(final).startswith(os.path.abspath(out) + os.sep))
 
     @staticmethod
     async def _ds_edit(client, peer, msg, text):
@@ -488,11 +592,14 @@ class DownloadStationMixin:
             text += (f"🔌 `{base_url(c)}` · 👤 `{c['user']}`" + (" · 🔐 2FA" if c.get('device') else "") + "\n"
                      f"Estado: {'⚠️ ' + self.ds_error if self.ds_error else '✅ conectado'}\n"
                      f"Torrents y magnets del canal: {'✅ a Download Station' if self.ds_send_torrents() else '❌ no se envían'}\n\n"
+                     f"Compartir lo terminado: **{seed_label(c.get('seed_days'))}**\n\n"
                      "_Lo que termine se avisa y, si el renombrado está activado, se coloca en la biblioteca._")
             buttons = [
                 [Button.inline("🧪 Probar conexión", data="cmd_ds_test"),
                  Button.inline("✏️ Cambiar datos", data="cmd_ds_setup")],
                 [Button.inline(f"🧲 Enviar torrents: {'✅' if self.ds_send_torrents() else '❌'}", data="cmd_ds_send")],
+                [Button.inline(f"🌱 Compartir: {seed_label(self.ds_conf.get('seed_days'))}", data="cmd_ds_seed"),
+                 Button.inline(f"🗑️ Terminados ({len(self._ds_done_tasks())})", data="menu_ds_done")],
                 [Button.inline("🔌 Desconectar", data="cmd_ds_forget_ask")],
                 [Button.inline("🔙 Volver", data="menu_config")],
             ]
@@ -506,6 +613,46 @@ class DownloadStationMixin:
             buttons = [[Button.inline("🔌 Conectar", data="cmd_ds_setup")],
                        [Button.inline("🔙 Volver", data="menu_config")]]
         return text, buttons
+
+    def _ds_done_tasks(self):
+        return [t for t in self.ds_tasks if t.get('status') in DONE]
+
+    def _ds_task(self, tid):
+        return next((t for t in self.ds_tasks if t['id'] == tid), None)
+
+    def ds_seed_view(self):
+        cur = self.ds_conf.get('seed_days')
+        text = ("🌱 **¿Cuántos días se comparte lo terminado?**\n\n"
+                "Pasado ese tiempo lo quito de Download Station y borro el archivo, pero solo si ya está "
+                "en tu biblioteca. Si no lo está, quito la tarea y dejo el archivo.\n\n"
+                f"Ahora: **{seed_label(cur)}**")
+        opts = [Button.inline(("✅ " if cur == d else "") + seed_label(d), data=f"cmd_ds_seedset_{d}")
+                for d in SEED_OPTIONS]
+        rows = [opts[i:i + 4] for i in range(0, len(opts), 4)]
+        rows.append([Button.inline(("✅ " if not cur else "") + "♾️ Indefinido (lo borras tú)", data="cmd_ds_seedset_0")])
+        rows.append([Button.inline("🔙 Volver", data="menu_ds")])
+        return text, rows
+
+    def ds_done_view(self, note=""):
+        from .history_manager import hsize
+        tasks = self._ds_done_tasks()
+        days = self.ds_conf.get('seed_days')
+        fin = self.ds_conf.get('finished_at', {})
+        text = "🗑️ **Terminados en Download Station**\n\n" + (note + "\n\n" if note else "")
+        if not tasks:
+            return text + "No hay nada terminado.", [[Button.inline("🔙 Volver", data="menu_ds")]]
+        rows = []
+        for t in tasks[:12]:
+            left = ""
+            if days and t['id'] in fin:
+                rest = days * DAY - (time.time() - fin[t['id']])
+                left = f" · se quita en {max(0, rest) / DAY:.1f} d" if rest > 0 else " · se quita ya"
+            lib = "📚" if self.ds_conf.get('placed', {}).get(t['id']) else "📄"
+            text += f"{lib} {t.get('title', '?')[:45]} · {hsize(t.get('size') or 0)}{left}\n"
+            rows.append([Button.inline(f"🗑️ {t.get('title', '?')[:30]}", data=f"cmd_ds_del_{t['id']}")])
+        text += "\n_📚 ya está en tu biblioteca · 📄 no lo está_"
+        rows.append([Button.inline("🔙 Volver", data="menu_ds")])
+        return text, rows
 
     # ---------- asistente ----------
     WIZ_CANCEL = [Button.inline("✖️ Cancelar", data="cmd_ds_cancel")]
@@ -686,6 +833,40 @@ class DownloadStationMixin:
                 self.ds_error = str(e)
                 note = f"❌ **No conecta:** {e}"
             text, buttons = self.ds_view(note)
+        elif data == 'cmd_ds_seed':
+            text, buttons = self.ds_seed_view()
+        elif data.startswith('cmd_ds_seedset_'):
+            n = int(data.rsplit('_', 1)[1])
+            self.ds_conf['seed_days'] = n if n in SEED_OPTIONS else None
+            self._ds_save()
+            self._ds_wake.set()
+            text, buttons = self.ds_seed_view()
+        elif data == 'menu_ds_done':
+            text, buttons = self.ds_done_view()
+        elif data.startswith('cmd_ds_del_'):
+            t = self._ds_task(data[len('cmd_ds_del_'):])
+            if not t:
+                text, buttons = self.ds_done_view("Esa tarea ya no está.")
+            else:
+                placed = self.ds_conf.get('placed', {}).get(t['id'])
+                text = (f"🗑️ **¿Quitar** `{t.get('title', '?')}`**?**\n\n"
+                        + ("Ya está en tu biblioteca, así que puedes borrar también el archivo."
+                           if placed else "⚠️ No está en tu biblioteca: si borras el archivo, se pierde."))
+                buttons = [[Button.inline("🗑️ Quitar y borrar el archivo", data=f"cmd_ds_delf_{t['id']}")],
+                           [Button.inline("➖ Solo quitar de Download Station", data=f"cmd_ds_delt_{t['id']}")],
+                           [Button.inline("❌ No", data="menu_ds_done")]]
+        elif data.startswith(('cmd_ds_delf_', 'cmd_ds_delt_')):
+            t = self._ds_task(data[len('cmd_ds_delf_'):])
+            if not t:
+                text, buttons = self.ds_done_view("Esa tarea ya no está.")
+            else:
+                await event.answer("Quitando…")
+                try:
+                    note = await self._ds_remove(t, delete_files=data.startswith('cmd_ds_delf_'))
+                    self.ds_tasks = [x for x in self.ds_tasks if x['id'] != t['id']]
+                except Exception as e:
+                    note = f"❌ No he podido quitarla: {e}"
+                text, buttons = self.ds_done_view(note)
         elif data == 'cmd_ds_send':
             self.ds_conf['send_torrents'] = not self.ds_send_torrents()
             self._ds_save()

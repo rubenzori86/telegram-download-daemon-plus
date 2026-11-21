@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import ssl
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,6 +36,11 @@ from telethon import Button
 logger = logging.getLogger(__name__)
 
 POLL_ACTIVE = 15
+# Antes de tocar lo terminado, los archivos tienen que llevar este tiempo sin cambiar de
+# tamaño ni de fecha: un archivo de decenas de GB puede seguir escribiéndose un rato.
+STABLE_SECONDS = 120
+STABLE_POLL = 15
+STABLE_MAX = 12 * 3600
 POLL_IDLE = 60
 TIMEOUT = 20
 DEVICE_NAME = "Telegram Download Daemon"
@@ -238,6 +244,9 @@ class DownloadStationMixin:
         self._ds_client = None
         self._ds_lock = asyncio.Lock()
         self._ds_wake = asyncio.Event()
+        self._ds_inflight = set()
+        self.ds_stable_seconds = STABLE_SECONDS
+        self.ds_stable_poll = STABLE_POLL
         self._ds_load()
 
     # ---------- configuración ----------
@@ -317,19 +326,69 @@ class DownloadStationMixin:
     async def _ds_check_finished(self, tasks, client, peer):
         done_ids = set(self.ds_conf.get('done_ids', []))
         present = {t['id'] for t in tasks}
-        new = [t for t in tasks if t.get('status') in DONE and t['id'] not in done_ids]
         pruned = done_ids & present
-        for t in new:
-            pruned.add(t['id'])
         if pruned != done_ids:
             self.ds_conf['done_ids'] = sorted(pruned)
             self._ds_save()
-        for t in new:
+        for t in tasks:
+            if t.get('status') in DONE and t['id'] not in pruned and t['id'] not in self._ds_inflight:
+                # en segundo plano: esperar a que el archivo se asiente puede llevar minutos
+                self._ds_inflight.add(t['id'])
+                asyncio.create_task(self._ds_process(t, client, peer))
+
+    async def _ds_process(self, t, client, peer):
+        try:
+            await self._ds_finished(t, client, peer)
+        except Exception as e:
+            logger.error("Error procesando lo terminado en Download Station (%s): %s",
+                         t.get('title'), e, exc_info=True)
+        finally:
+            # se marca como hecho al acabar: si el bot se reinicia a medias, se repite
+            done = set(self.ds_conf.get('done_ids', []))
+            done.add(t['id'])
+            self.ds_conf['done_ids'] = sorted(done)
             try:
-                await self._ds_finished(t, client, peer)
+                self._ds_save()
             except Exception as e:
-                logger.error("Error procesando lo terminado en Download Station (%s): %s",
-                             t.get('title'), e, exc_info=True)
+                logger.warning("No se pudo guardar el estado de Download Station: %s", e)
+            self._ds_inflight.discard(t['id'])
+
+    @staticmethod
+    def _ds_snapshot(path):
+        """Tamaño y fecha de cada archivo (de la carpeta entera si es una carpeta)."""
+        files = []
+        if os.path.isdir(path):
+            for root, _d, names in os.walk(path):
+                files += [os.path.join(root, n) for n in names]
+        elif os.path.exists(path):
+            files = [path]
+        snap = []
+        for f in sorted(files):
+            try:
+                st = os.stat(f)
+                snap.append((f, st.st_size, st.st_mtime_ns))
+            except OSError:
+                snap.append((f, None, None))
+        return tuple(snap)
+
+    async def _ds_wait_stable(self, path):
+        """Espera a que los archivos lleven ds_stable_seconds sin cambiar. False si no se
+        asientan en STABLE_MAX (o si desaparecen)."""
+        start = time.monotonic()
+        last = await asyncio.to_thread(self._ds_snapshot, path)
+        quiet_since = time.monotonic()
+        while True:
+            if not last:
+                return False
+            if time.monotonic() - quiet_since >= self.ds_stable_seconds:
+                return True
+            if time.monotonic() - start > STABLE_MAX:
+                return False
+            await asyncio.sleep(self.ds_stable_poll)
+            cur = await asyncio.to_thread(self._ds_snapshot, path)
+            if cur != last:
+                last = cur
+                quiet_since = time.monotonic()
 
     def _ds_local_path(self, destination, title):
         """La carpeta de destino de Download Station ('video/descargas') vista desde el bot:
@@ -366,28 +425,45 @@ class DownloadStationMixin:
         destination = ((t.get('additional') or {}).get('detail') or {}).get('destination', '')
         path = self._ds_local_path(destination, title)
         text = f"🧲 **Terminado en Download Station**\n📄 `{title}`\n📦 {hsize(t.get('size') or 0)}"
-        videos = []
-        if path and getattr(self, 'auto_rename', False):
-            if os.path.isdir(path):
-                for root, _d, files in os.walk(path):
-                    videos += [os.path.join(root, f) for f in sorted(files)]
-            else:
-                videos = [path]
-            videos = [v for v in videos if is_video_file(v) and os.path.getsize(v) >= MIN_VIDEO_BYTES]
-        elif not path:
+        place = bool(path) and getattr(self, 'auto_rename', False)
+        if not path:
             text += (f"\n⚠️ No veo la carpeta `{destination}` desde el bot. Para que la coloque, "
                      "monta ese volumen en el contenedor con la misma ruta.")
-        if videos:
-            text += "\n🏷️ _Identificando…_"
-        msg = await client.send_message(peer, text)
+        waiting = "\n⏳ _Esperando a que el archivo deje de cambiar para colocarlo…_"
+        msg = await client.send_message(peer, text + (waiting if place else ""))
         if hasattr(self, 'add_history'):
             self.add_history('downloaded', title, size=t.get('size') or 0, path=path or destination)
-        base = text.replace("\n🏷️ _Identificando…_", "")
+        if not place:
+            return
+
+        # Que nadie lo siga escribiendo: mismo tamaño y fecha durante un rato
+        if not await self._ds_wait_stable(path):
+            await self._ds_edit(client, peer, msg, text + "\n⚠️ _El archivo no ha dejado de cambiar (o ha "
+                                "desaparecido): no lo coloco._")
+            return
+        videos = []
+        if os.path.isdir(path):
+            for root, _d, files in os.walk(path):
+                videos += [os.path.join(root, f) for f in sorted(files)]
+        else:
+            videos = [path]
+        videos = [v for v in videos if is_video_file(v) and os.path.getsize(v) >= MIN_VIDEO_BYTES]
+        if not videos:
+            await self._ds_edit(client, peer, msg, text)
+            return
+        await self._ds_edit(client, peer, msg, text + "\n🏷️ _Identificando…_")
         for v in videos:
             copy = await asyncio.to_thread(self._ds_copy_for_library, v)
             copy = await self.maybe_remux(copy)
             await self.rename_media_file(copy, client, peer, notify_msg=msg if len(videos) == 1 else None,
-                                         base_text=base if len(videos) == 1 else "")
+                                         base_text=text if len(videos) == 1 else "")
+
+    @staticmethod
+    async def _ds_edit(client, peer, msg, text):
+        try:
+            await client.edit_message(peer, msg, text)
+        except Exception as e:
+            logger.debug("No se pudo editar el aviso de Download Station: %s", e)
 
     # ---------- panel ----------
     def ds_downloads_text(self, bar, hsize, short):

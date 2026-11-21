@@ -2,6 +2,13 @@
 
 Aquí se anotan los cambios de cada versión.
 
+## [1.5.1] - 2026-11-21
+
+### Corregido
+
+- **Partes incompletas:** un archivo por partes (RAR, 7z, ZIP) ya no se descomprime hasta que el bot comprueba con 7z que están todas y sin errores. Antes, con solo la primera parte, podía extraer una película cortada y colocarla en la biblioteca. Si faltan partes, avisa una vez.
+- **Download Station:** antes de colocar lo terminado, espera a que los archivos lleven 2 minutos sin cambiar de tamaño ni de fecha.
+
 ## [1.5.0] - 2026-11-08
 
 ### Añadido
@@ -44,6 +51,7 @@ Aquí se anotan los cambios de cada versión.
 
 - Los enlaces con vista previa de Telegram ya no se tratan como comandos.
 
+[1.5.1]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.5.1
 [1.5.0]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.5.0
 [1.3.0]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.3.0
 [1.2.1]: https://github.com/rubenzori86/telegram-download-daemon-plus/releases/tag/v1.2.1

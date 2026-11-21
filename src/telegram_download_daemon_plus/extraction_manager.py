@@ -151,6 +151,55 @@ class ExtractionManagerMixin:
     def _all_needed_parts_present(self, info):
         return os.path.exists(info['start'])
 
+    async def _verify_archive_set(self, start_file, info, run):
+        """¿Está el archivo completo? Se prueba entero con 7z, que recorre todos los volúmenes
+        y falla si falta alguno. Sin esta prueba no se extrae: unar extrae lo que puede de un
+        archivo incompleto y dice que ha ido bien, y eso dejaba películas cortadas.
+        Devuelve (completo, explicación)."""
+        if not os.path.exists(start_file):
+            return False, f"falta la primera parte ({os.path.basename(start_file)})"
+        try:
+            res = await run(["7z", "t", "-y", start_file])
+        except FileNotFoundError:
+            res = None
+        out = (res.stdout or '') if res else ''
+        if res is not None and res.returncode == 0 and 'Everything is Ok' in out:
+            vols = re.search(r'^Volumes = (\d+)', out, re.M)
+            return True, f"{vols.group(1)} volúmenes" if vols else "prueba correcta"
+        missing = re.findall(r'Missing volume\s*:\s*(\S.*)', out)
+        if missing:
+            return False, "falta " + ", ".join(sorted({m.strip() for m in missing}))
+        if re.search(r'Unexpected end of archive|Unexpected end of data', out):
+            return False, "el archivo está incompleto (faltan partes o una parte está a medias)"
+        if re.search(r'CRC Failed|Data Error|Headers Error', out):
+            return False, "el archivo está dañado (error de datos)"
+        # 7z no entiende el formato (p.ej. zip por partes .z01): se prueba con lsar
+        if res is None or re.search(r'Can not open the file as|Cannot open the file as|Unsupported', out):
+            try:
+                alt = await run(["lsar", "-t", start_file])
+                if alt.returncode == 0:
+                    return True, "prueba correcta (lsar)"
+                return False, "la prueba del archivo ha fallado (puede que falten partes)"
+            except FileNotFoundError:
+                pass
+        return False, "la prueba del archivo ha fallado (puede que falten partes)"
+
+    async def _warn_incomplete_set(self, set_key, label, detail, parts, client, peer_channel):
+        """Avisa una sola vez por conjunto de que no se descomprime."""
+        if not hasattr(self, '_incomplete_warned'):
+            self._incomplete_warned = set()
+        if set_key in self._incomplete_warned:
+            return
+        self._incomplete_warned.add(set_key)
+        try:
+            await client.send_message(
+                peer_channel,
+                f"🧩 **No descomprimo** `{label}`\n"
+                f"Tengo {parts} parte{'s' if parts != 1 else ''}, pero {detail}.\n"
+                "_Cuando lleguen todas las partes lo descomprimo solo. Así no se queda una peli cortada._")
+        except Exception as e:
+            logger.debug("No se pudo avisar de partes que faltan: %s", e)
+
     async def _find_message_ids_by_content(self, client, peer_channel, matched_names, limit=200):
         """Busca IDs de mensajes que contengan nombres de archivo de un set multipart.
 
@@ -219,7 +268,6 @@ class ExtractionManagerMixin:
         base_name = info['base']
         matched_files = []
         total_bytes = 0
-        indices = []
 
         for pattern in patterns:
             if glob.glob(pattern + "." + TELEGRAM_DAEMON_TEMP_SUFFIX):
@@ -293,94 +341,12 @@ class ExtractionManagerMixin:
                     matched_files.append(f)
         matched_files = sorted(set(matched_files))
         
-        should_extract = False
-        
-        # Check if we have the last part to trigger extraction
-        # Heuristic: If we have matched files, check if they form a complete sequence
-        if matched_files:
-            # Simple heuristic: Check if the file being processed is roughly the last one or if we have enough parts
-            # For now, let's trust the patterns. If the set is complete-ish.
-            # Robust check:
-            # 1. Parse indices from filenames (e.g. .part01.rar -> 1)
-            # 2. Check if we have 1..N continuous sequence
-            # 3. If the current file is the last one (or we re-scan), we go.
-            
-            # Simplified for this specific user request:
-            # "If 5 is smaller (last part), and we have 1, 2, 3, 4 -> extract"
-            
-            # Let's assume the current event triggered this check.
-            pass
-            
-        # Initialization of extracting_sets as dict if needed
         if not hasattr(self, 'extracting_sets'):
             self.extracting_sets = {}
-            
         if set_key in self.extracting_sets:
             return
 
-        # Verify completeness strictly
-        # We need to know the TOTAL number of parts to know if we have them all.
-        # But we often don't know N.
-        # Heuristic: If we have a file that looks like the last part (smaller size?)
-        # OR if we just want to try extracting if 'unar' thinks it's okay? 'unar' might fail if parts missing.
-        
-        # Let's try to verify sequence continuity at least
-        try:
-            indices = []
-            for f in matched_files:
-                # Find the number in the part suffix
-                match = re.search(r'\.part(\d+)\.rar$', f, re.IGNORECASE)
-                if match:
-                    indices.append(int(match.group(1)))
-                else:
-                    # Maybe .001, .002 format?
-                    match = re.search(r'\.(\d{3})$', f)
-                    if match:
-                         indices.append(int(match.group(1)))
-            
-            if indices:
-                indices.sort()
-                # Check continuity: 1, 2, 3...
-                # If first is 1 and last is len(indices), we have a continuous sequence 1..N
-                if indices[0] == 1 and indices[-1] == len(indices):
-                    # We have 1..N. Is N the last one?
-                    # Check file sizes
-                    last_index = indices[-1]
-                    # Find file corresponding to last index
-                    last_part_file = None
-                    first_part_file = None
-                    
-                    # Re-scan to match indices to files (inefficient but safe)
-                    for f in matched_files:
-                        if f.endswith(f"{last_index:03d}") or f.endswith(f"part{last_index}.rar") or f.endswith(f"part{last_index:02d}.rar"):
-                            last_part_file = f
-                        if f.endswith("001") or f.endswith("part1.rar") or f.endswith("part01.rar"):
-                            first_part_file = f
-                    
-                    if last_part_file and first_part_file:
-                        try:
-                            s_last = os.path.getsize(last_part_file)
-                            s_first = os.path.getsize(first_part_file)
-                            # If last part is smaller or equal (and we have multiple parts), good.
-                            # If we have only 1 part and it matches start/end logic, ok.
-                            if len(indices) > 1:
-                                if s_last <= s_first:
-                                    # Very likely the end
-                                    should_extract = True
-                                else:
-                                    # Corrección 2: última parte mayor que la primera — dejar decidir al probe
-                                    xlog(f"⚠️ Última parte ({s_last} bytes) >= primera ({s_first} bytes), dejando decidir al probe de 7z", 'debug')
-                                    should_extract = False
-                        except:
-                            pass
-                else:
-                    # Missing intermediate parts
-                    xlog(f"🧩 Faltan partes intermedias: Tenemos {indices}", 'debug')
-                    return
-        except Exception as e:
-            xlog(f"Error checking continuity: {e}", 'warning')
-
-        xlog(f"🚀 Iniciando extracción: should_extract={should_extract}, índices={indices}, archivos={len(matched_files)}, total={naturalsize(total_bytes)}", 'info')
+        xlog(f"🔎 Comprobando '{extracted_label}' antes de extraer ({len(matched_files)} partes)", 'info')
         self.extracting_sets[set_key] = f"🔄 Descomprimiendo {extracted_label} ({len(matched_files)} partes)..."
 
         matched_names = {os.path.basename(p) for p in matched_files}
@@ -449,33 +415,19 @@ class ExtractionManagerMixin:
                     return cand
                 suffix += 1
 
+        start_extract_msg = None
         try:
-            if not should_extract:
-                probe = await _probe_archive_info(start_file)
-                xlog(f"🔍 Probe 7z resultado: volumes={probe.get('volumes')}, total_physical_size={probe.get('total_physical_size')}", 'debug')
-                if probe.get('volumes'):
-                    if len(matched_files) < probe['volumes']:
-                        xlog(f"⏳ Esperando partes: {len(matched_files)}/{probe['volumes']} presentes para {os.path.basename(start_file)}", 'debug')
-                        if set_key in self.extracting_sets:
-                            del self.extracting_sets[set_key]
-                        return
-                if probe.get('total_physical_size'):
-                    if total_bytes < probe['total_physical_size']:
-                        xlog(f"⏳ Esperando bytes: {naturalsize(total_bytes)}/{naturalsize(probe['total_physical_size'])} para {os.path.basename(start_file)}", 'debug')
-                        if set_key in self.extracting_sets:
-                            del self.extracting_sets[set_key]
-                        return
-                # Si el probe no pudo determinar nada Y tenemos secuencia continua 1..N, extraer igualmente
-                if indices and indices[0] == 1 and indices[-1] == len(indices):
-                    xlog(f"✅ Probe sin datos pero secuencia continua 1..{len(indices)} confirmada, extrayendo...", 'info')
-                    should_extract = True
-                else:
-                    xlog(f"⚠️ Probe sin datos y secuencia incompleta {indices}, no se extrae", 'warning')
-                    if set_key in self.extracting_sets:
-                        del self.extracting_sets[set_key]
-                    return
-            else:
-                xlog(f"🚀 Escaneado inteligente completado para {extracted_label}. Iniciando extracción forzada.", 'info')
+            ok, detail = await self._verify_archive_set(start_file, info, _run_subprocess)
+            if not ok:
+                xlog(f"🧩 No se extrae '{extracted_label}': {detail}", 'warning')
+                await self._warn_incomplete_set(set_key, extracted_label, detail, len(matched_files),
+                                                client, peer_channel)
+                if set_key in self.extracting_sets:
+                    del self.extracting_sets[set_key]
+                return
+            xlog(f"✅ '{extracted_label}' comprobado y completo ({detail})", 'info')
+            if hasattr(self, '_incomplete_warned'):
+                self._incomplete_warned.discard(set_key)
 
             base_target = os.path.join(folder, f"{extracted_label}_EXTRAIDO")
             tmp_target = base_target + ".tmp"
